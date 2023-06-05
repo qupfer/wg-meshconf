@@ -112,7 +112,7 @@ class DatabaseManager:
                 peers = list(database['peers'])
                 psk_tuples= list(itertools.combinations(peers,r=2))
 
-            for counter,peer in enumerate(database["peers"]):
+            for peer in database["peers"]:
                 if database["peers"][peer].get("ListenPort") is None:
                     database["peers"][peer]["ListenPort"] = 51820
 

@@ -11,6 +11,7 @@ import copy
 import csv
 import pathlib
 import sys
+import itertools
 
 from rich.console import Console
 from rich.table import Table
@@ -47,7 +48,7 @@ INTERFACE_OPTIONAL_ATTRIBUTES = [
 
 PEER_ATTRIBUTES = [
     "PublicKey",
-    "PresharedKey",
+    "PresharedKeys",
     "AllowedIPs",
     "Endpoint",
     "PersistentKeepalive",
@@ -74,6 +75,7 @@ KEY_TYPE = {
     "PreDown": str,
     "PostDown": str,
     "SaveConfig": bool,
+    "PresharedKeys": str,
 }
 
 
@@ -83,7 +85,7 @@ class DatabaseManager:
         self.database_template = {"peers": {}}
         self.wireguard = WireGuard()
 
-    def init(self):
+    def init(self, with_psk: bool):
         """initialize an empty database file"""
         if not self.database_path.exists():
             with self.database_path.open(
@@ -104,14 +106,42 @@ class DatabaseManager:
                         print(f"The value of {key} cannot be automatically generated")
                         sys.exit(1)
 
-            # automatically generate missing values
-            for peer in database["peers"]:
+            # global psk informations
+            if with_psk:
+                existing_keys=[]
+                peers = list(database['peers'])
+                psk_tuples= list(itertools.combinations(peers,r=2))
+
+            for counter,peer in enumerate(database["peers"]):
                 if database["peers"][peer].get("ListenPort") is None:
                     database["peers"][peer]["ListenPort"] = 51820
 
                 if database["peers"][peer].get("PrivateKey") is None:
                     privatekey = self.wireguard.genkey()
                     database["peers"][peer]["PrivateKey"] = privatekey
+
+                presharedkeys=[]
+                if database["peers"][peer]["PresharedKeys"] is not None:
+                    peer_existing_keys=database["peers"][peer]["PresharedKeys"].split(",")
+                    existing_keys.extend(peer_existing_keys)
+
+                # peer related psk stuff 
+                if with_psk:
+                    for psk in psk_tuples:
+                        if peer in psk:
+                            psk_to_use=""
+                            for key in existing_keys:
+                                existing_key_tuple=key.split(":")
+                                if (psk[0] in key) and (psk[1] in key):
+                                    psk_to_use=existing_key_tuple[2]
+
+                            if not psk_to_use:
+                                psk_to_use=self.wireguard.genkey()
+                                new_entry=f"{psk[0]}:{psk[1]}:{psk_to_use}"
+                                existing_keys.append(new_entry)
+                            psk_string=f"{psk[0]}:{psk[1]}:{psk_to_use}"
+                            presharedkeys.append(psk_string)
+                            database["peers"][peer]["PresharedKeys"] = str.join(",",presharedkeys)
             self.write_database(database)
 
     def read_database(self):
@@ -177,6 +207,7 @@ class DatabaseManager:
         PersistentKeepalive: int = None,
         FwMark: str = None,
         PrivateKey: str = None,
+        PresharedKeys: str = None,
         DNS: str = None,
         MTU: int = None,
         Table: str = None,
@@ -215,6 +246,7 @@ class DatabaseManager:
         PersistentKeepalive: int = None,
         FwMark: str = None,
         PrivateKey: str = None,
+        PresharedKeys: str = None,
         DNS: str = None,
         MTU: int = None,
         Table: str = None,
@@ -310,7 +342,7 @@ class DatabaseManager:
         # print the constructed table in console
         Console().print(table)
 
-    def genconfig(self, Name: str, output: pathlib.Path):
+    def genconfig(self, Name: str, output: pathlib.Path, with_psk: bool):
         database = self.read_database()
 
         # check if peer ID is specified
@@ -331,7 +363,6 @@ class DatabaseManager:
             print(f"Creating output directory: {output}", file=sys.stderr)
             output.mkdir(exist_ok=True)
 
-        # for every peer in the database
         for peer in peers:
             with (output / f"{peer}.conf").open("w") as config:
                 config.write("[Interface]\n")
@@ -384,3 +415,10 @@ class DatabaseManager:
                             config.write(
                                 "{} = {}\n".format(key, database["peers"][p][key])
                             )
+
+                    if with_psk:
+                        if database["peers"][p].get("PresharedKeys") is not None:
+                            for key in database["peers"][p].get("PresharedKeys").split(","):
+                                key_tuple=key.split(":")
+                                if p and peer in key_tuple:
+                                    config.write(f'PresharedKey = {key_tuple[2]}\n')
